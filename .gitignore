@@ -1,0 +1,26 @@
+/tests/INSTRUCCIONES.md
+DOCS.md
+
+# Terraform state — contiene ARNs, IDs de recursos y datos sensibles de infraestructura
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform/terraform.tfstate
+**/*.tfstate
+**/*.tfstate.backup
+
+# Directorio de trabajo de Terraform (binarios de providers, caché)
+terraform/.terraform/
+
+# Variables con valores reales (pueden contener keys, passwords, etc.)
+*.tfvars
+*.auto.tfvars
+
+# Dependencias Node
+**/node_modules/
+
+# Zips generados por Terraform al empaquetar lambdas
+**/*.zip
+
+# Variables de entorno locales
+.env
+.env.*
