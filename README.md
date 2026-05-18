@@ -26,16 +26,30 @@ La disponibilidad fue priorizada sobre rendimiento y seguridad por las siguiente
 - **La degradación controlada es preferible al fallo total.** El Nivel 2 mantiene las transacciones activas (el corazón del negocio), sacrificando analytics y monitoring que pueden recuperarse con datos históricos.
 - **La recuperación automática reduce el MTTR (Mean Time To Recovery)** eliminando la dependencia de intervención humana en horas fuera de oficina.
 
-El trade-off consciente: el Nivel 3 retorna `200 OK` incluso con `error: true` en el body, porque en ese nivel el sistema prioriza "seguir respondiendo" sobre "reportar el estado real". Esto puede confundir a clientes que esperan `500`, pero garantiza que el circuit breaker del cliente no abra un segundo corte de circuito.
+Todos los niveles reportan `500` cuando `error: true` llega en el payload, de modo que el Router contabiliza correctamente los fallos y las transiciones de degradación reflejan el estado real del sistema.
 
 ---
 
 ## 3. Decisiones de Arquitectura
 
-### DA-01: REST API Gateway como punto de entrada único
+### DA-01: REST API Gateway como punto de entrada con enrutamiento dinámico
 
-- **Decisión:** todo el tráfico POST entra por el path `/prod/service-api` usando una REST API de API Gateway.
-- **Justificación:** centraliza el control de tráfico y es el contrato que el cliente K6 espera. La REST API genera el path `/prod/` en la URL mediante stages explícitos.
+- **Decisión:** todo el tráfico POST entra por el path `/prod/service-api` usando una REST API de API Gateway, que delega el enrutamiento dinámico al Router Lambda.
+- **Flujo de enrutamiento dinámico:**
+  ```
+  Cliente → API Gateway (POST /prod/service-api)
+              ↓
+          Router Lambda
+              ↓ (lee estado actual)
+          DynamoDB (current_level = 1 | 2 | 3)
+              ↓ (invoca la Lambda del nivel activo)
+          Level1 | Level2 | Level3 Lambda
+              ↓ (respuesta)
+          Router Lambda (actualiza contadores y evalúa transición)
+              ↓
+          Cliente recibe respuesta del nivel activo
+  ```
+- **Justificación:** el API Gateway actúa como punto de entrada único y estable — el cliente siempre llama al mismo endpoint sin importar en qué nivel está el sistema. El Router Lambda consulta DynamoDB en cada request para determinar a qué Lambda de nivel invocar, logrando así el enrutamiento dinámico sin cambios en la configuración de API Gateway.
 - **Alternativa descartada:** HTTP API Gateway — no genera el path `/prod/` de forma nativa; requeriría configuración adicional incompatible con el cliente existente.
 - **Consecuencia:** único punto de entrada (SPOF potencial), mitigado por ser un servicio administrado por AWS con SLA del 99.95%.
 
@@ -121,42 +135,9 @@ Esto permite:
 
 ---
 
-## 5. Diagrama ASCII de la arquitectura
+## 5. Diagrama de la arquitectura
 
-```
-                         ┌─────────────────────────────────────────┐
-                         │             AWS Cloud (us-east-2)        │
-                         │                                          │
- K6 Script               │  ┌─────────────────┐                    │
- POST /prod/service-api ─┼─►│  API Gateway    │                    │
- { error: true/false }   │  │  REST API       │                    │
-                         │  └────────┬────────┘                    │
-                         │           │ AWS_PROXY                    │
-                         │           ▼                              │
-                         │  ┌─────────────────┐   GetItem          │
-                         │  │  Lambda Router  ├──────────────────► │
-                         │  │  (ultraseguros- │   UpdateItem       │  ┌──────────────────┐
-                         │  │    router)      │◄──────────────────┤  │    DynamoDB      │
-                         │  └────────┬────────┘                   │  │ ultraseguros_    │
-                         │           │ InvokeFunction              │  │    _state        │
-                         │     ┌─────┴──────┐                     │  │                  │
-                         │     ▼            ▼                      │  │ pk: "SYSTEM"     │
-                         │ ┌──────┐  ┌──────┐  ┌──────┐          │  │ current_level: 1 │
-                         │ │  L1  │  │  L2  │  │  L3  │          │  │ error_count: 0   │
-                         │ │(Full)│  │(Deg.)│  │(Min.)│          │  │ success_streak: 0│
-                         │ └──────┘  └──────┘  └──────┘          │  └──────────────────┘
-                         │                                          │           ▲
-                         │  ┌─────────────────┐   GetItem/Update   │           │
-                         │  │  EventBridge    │                    │           │
-                         │  │  rate(1 minute) ├──►  Lambda         ├───────────┘
-                         │  └─────────────────┘   Health-Check     │
-                         │                                          │
-                         │  ┌─────────────────────────────────────┐│
-                         │  │            CloudWatch Logs           ││
-                         │  │  /aws/lambda/ultraseguros-*          ││
-                         │  └─────────────────────────────────────┘│
-                         └─────────────────────────────────────────┘
-```
+![Diagrama de arquitectura UltraSeguros](images/infra_modulo_3.png)
 
 ---
 
